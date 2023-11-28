@@ -1,0 +1,5 @@
+$schema: https://azuremlschemas.azureedge.net/latest/model.schema.json
+name: densenet121
+path: model/trained/data.pkl
+description: Densenet121 stock model from PyTorch.
+type: custom_model
