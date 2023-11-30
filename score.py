@@ -5,6 +5,8 @@ import torch
 import torchxrayvision as xrv
 import numpy as np
 
+from byte2im import base64_to_ndarray
+
 
 def init():
     """
@@ -15,9 +17,7 @@ def init():
     # AZUREML_MODEL_DIR is an environment variable created during deployment.
     # It is the path to the model folder (./azureml-models/$MODEL_NAME/$VERSION)
     # Please provide your model's folder name if there is one
-    path = os.path.join(
-        os.getenv("AZUREML_MODEL_DIR"), "trained/model"
-    )
+    path = os.path.join(os.getenv("AZUREML_MODEL_DIR"), "trained/model")
     # deserialize the model file back into a torch model
     model = torch.load(path)
     model.float()
@@ -35,12 +35,14 @@ def run(raw_data):
     method and return the result back
     """
     logging.info("DenseNet121: Request received")
-    data = json.loads(raw_data)["data"]
-    data = np.array(data, dtype="float32")
+    data = json.loads(raw_data)["image"]
+    data = base64_to_ndarray(data)
     logging.info("Data Type: %s", data.dtype)
     result = inference(data)
     logging.info("DenseNet121: Request processed")
-    return json.dumps(str(result))
+    predictions = json.dumps(result)
+    logging.info("Type of prediction: %s", type(predictions))
+    return predictions
 
 
 def inference(image: np.ndarray):
@@ -65,7 +67,9 @@ def inference(image: np.ndarray):
             image = image.cuda()
 
         preds = model(image).cpu()
-        output["preds"] = dict(zip(xrv.datasets.default_pathologies,preds[0].detach().numpy()))
+        output["preds"] = dict(
+            zip(xrv.datasets.default_pathologies, preds[0].detach().numpy())
+        )
 
     logging.info("Prediction: {}".format(output))
     return output
