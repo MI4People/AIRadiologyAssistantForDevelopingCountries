@@ -41,7 +41,6 @@ def run(raw_data):
     result = inference(data)
     logging.info("DenseNet121: Request processed")
     predictions = json.dumps(result)
-    logging.info("Type of prediction: %s", type(predictions))
     return predictions
 
 
@@ -68,7 +67,7 @@ def inference(image: np.ndarray):
 
         preds = model(image).cpu()
         output["preds"] = dict(
-            zip(xrv.datasets.default_pathologies, preds[0].detach().numpy())
+            zip(xrv.datasets.default_pathologies, preds[0].detach().numpy().tolist())
         )
 
     logging.info("Prediction: {}".format(output))
