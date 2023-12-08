@@ -4,8 +4,11 @@ import json
 import torch
 import torchxrayvision as xrv
 import numpy as np
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputSoftmaxTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image
 
-from byte2im import base64_to_ndarray
+from process import base64_to_ndarray, ndarray_to_base64
 
 
 def init():
@@ -38,10 +41,12 @@ def run(raw_data):
     data = json.loads(raw_data)["image"]
     data = base64_to_ndarray(data)
     logging.info("Data Type: %s", data.dtype)
-    result = inference(data)
+    predictions = inference(data)
+    gradimages = get_gradcam(data, None)
     logging.info("DenseNet121: Request processed")
-    predictions = json.dumps(result)
-    return predictions
+    predictions.update(gradimages)
+    results = json.dumps(predictions)
+    return results
 
 
 def inference(image: np.ndarray):
@@ -72,3 +77,34 @@ def inference(image: np.ndarray):
 
     logging.info("Prediction: {}".format(output))
     return output
+
+
+def get_gradcam(image: np.ndarray, target_layers: torch.nn.Module):
+    """
+    Args:
+        image (np.array): Image to be processed
+    Returns:
+        torch.tensor: Prediction
+    """
+    outputs = {}
+    targets = [
+        ClassifierOutputSoftmaxTarget(xrv.datasets.default_pathologies.index(pathology))
+        for pathology in xrv.datasets.default_pathologies
+    ]
+    image = image[None, None, :, :]
+    image = torch.from_numpy(image)
+    image_np = image.numpy()
+    image_np = image_np - np.min(image_np)
+    image_np = image_np / np.max(image_np)
+    image_np = np.transpose(image_np, (0, 2, 3, 1))
+    if target_layers is None:
+        target_layers = [model.features[-2][-1][-1]]
+    cam = GradCAM(model=model, target_layers=target_layers)
+
+    for target, pathology in zip(targets, xrv.datasets.default_pathologies):
+        grayscale_cam = cam(input_tensor=image, targets=[target])
+        grayscale_cam = grayscale_cam[0, :]
+        visualization = show_cam_on_image(image_np, grayscale_cam, use_rgb=True)
+        outputs[pathology] = ndarray_to_base64(visualization.squeeze())
+
+    return {"gradcam": outputs}
