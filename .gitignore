@@ -160,8 +160,8 @@ cython_debug/
 #.idea/
 
 # Data files
-CXR8/
-*.dSYM/
+CXR8/**/*
+*.dSYM
 
 # General
 .DS_Store

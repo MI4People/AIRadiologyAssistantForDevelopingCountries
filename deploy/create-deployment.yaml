@@ -2,12 +2,12 @@ $schema: https://azuremlschemas.azureedge.net/latest/managedOnlineDeployment.sch
 name: densenet121
 endpoint_name: densenet121
 model:
-  path: ../model/trained/
+  path: ../model/
 code_configuration:
-  code: ../
+  code: ../code
   scoring_script: score.py
 environment:
-  conda_file: ../model/environment/conda.yaml
-  image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+  image: mcr.microsoft.com/azureml/minimal-ubuntu20.04-py38-cuda11.6.2-gpu-inference:latest
+  conda_file: ../environment/conda.yaml
 instance_type: Standard_DS3_v2
 instance_count: 1
