@@ -1,0 +1,8 @@
+azure-storage-blob
+azure-identity
+azure-keyvault-secrets
+azure-keyvault-certificates
+azure-keyvault-keys
+python-dotenv
+torchxrayvision
+torchcam
