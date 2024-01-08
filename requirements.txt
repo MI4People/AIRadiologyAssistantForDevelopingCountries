@@ -6,3 +6,4 @@ azure-keyvault-keys
 python-dotenv
 torchxrayvision
 torchcam
+joblib

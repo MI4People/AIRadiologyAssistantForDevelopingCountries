@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import io
+import joblib
 
 import torch
 from torchvision.transforms.functional import to_pil_image
@@ -36,14 +37,14 @@ def init():
     # AZUREML_MODEL_DIR is an environment variable created during deployment.
     # It is the path to the model folder (./azureml-models/$MODEL_NAME/$VERSION)
     # Please provide your model's folder name if there is one
-    path = os.path.join(os.getenv("AZUREML_MODEL_DIR"), "model")
+    path = os.path.join(os.getenv("AZUREML_MODEL_DIR"), "model.pkl")
     # deserialize the model file back into a torch model
-    model = torch.load(path)
+    model = joblib.load(path)
     model.float()
     if torch.cuda.is_available():
         model = model.cuda()
     model.eval()
-    logger.info("DenseNet121: Loaded model from path: %s", path)
+    logger.info(f"{model.weights}: Loaded model from path: {path}")
     # Connect to the blob storage
     blob_service_client = BlobServiceClient.from_connection_string(
         os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -51,9 +52,10 @@ def init():
     container_client = blob_service_client.get_container_client(
         os.getenv("AZURE_STORAGE_CONTAINER_NAME")
     )
-    logger.info("DenseNet121: Connected to blob storage")
+    logger.info(f"{model.weights}: Connected to blob storage")
     method = os.getenv("METHOD", "gradcam")
-    cam = METHODS[method](model=model, target_layer=model.features[-2][-1][-1])
+    target_layer = model.features.get_submodule(os.getenv("TARGET_LAYER", "denseblock4.denselayer16.conv2"))
+    cam = METHODS[method](model=model, target_layer=target_layer)
 
 
 def run(raw_data):
@@ -62,7 +64,7 @@ def run(raw_data):
     In the example we extract the data from the json input and call the scikit-learn model's predict()
     method and return the result back
     """
-    logger.info("Densenet121: Request received")
+    logger.info(f"{model.weights}: Request received")
     results = {}
     image_uuid = json.loads(raw_data)["image_uuid"]
     blob_client = container_client.get_blob_client(image_uuid)
@@ -73,32 +75,35 @@ def run(raw_data):
     results["gradimages"] = get_gradcam(
         transformed, preds, image_uuid
     )
-    logger.info("DenseNet121: Request processed")
+    logger.info(f"{model.weights}: Request processed")
     results = json.dumps(results)
     return results
 
 
-def inference(image: torch.tensor):
+def inference(image: torch.tensor) -> tuple[dict, torch.Tensor]:
     """
     Args:
         image (np.array): Image to be processed
     Returns:
-        torch.tensor: Prediction
+`       tuple[dict, torch.Tensor]: Dictionary of predictions for HTTP response and tensor of predictions
     """
     image = image.unsqueeze(0)
     if torch.cuda.is_available():
         image = image.cuda()
 
     preds = model(image).cpu()
-    return dict(zip(model.pathologies, preds[0].detach().numpy().tolist())), preds
+    preds_dict = dict(zip(model.pathologies, preds[0].detach().numpy().tolist()))
+    return preds_dict, preds
 
 
-def get_gradcam(transformed: torch.Tensor, preds: torch.Tensor, image_uuid: str):
+def get_gradcam(transformed: torch.Tensor, preds: torch.Tensor, image_uuid: str) -> dict:
     """
     Args:
-        image (np.array): Image to be processed
+        transformed: Image after preprocessing
+        preds: Predictions
+        image_uuid: UUID of the image in the blob storage
     Returns:
-        torch.tensor: Prediction
+        dict: Dictionary of gradcam images URLs for each pathology in blob storage
     """
     content_settings = ContentSettings(content_type="image/png")
     model.zero_grad()

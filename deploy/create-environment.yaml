@@ -1,5 +1,5 @@
 $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: densenet121-env
-image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
-conda_file: model/environment/conda.yaml
-description: Environment created from a Docker image plus Conda environment.
+image: mcr.microsoft.com/azureml/minimal-ubuntu20.04-py38-cuda11.6.2-gpu-inference
+conda_file: ../environment/conda.yaml
+description: Torchxrayvision environment with torchcam.

@@ -1,0 +1,23 @@
+name: densenet121
+channels:
+  - pytorch
+  - pytorch-nightly
+  - conda-forge
+  - microsoft
+  - defaults
+dependencies:
+  - python==3.10.4
+  - pip
+  - conda
+  - pip:
+    - azure-ai-ml
+    - azureml-defaults
+    - azureml-sdk
+    - azure-storage-blob
+    - azure-identity
+    - azureml-inference-server-http
+    - joblib
+    - torchvision>=0.15.2
+    - torchxrayvision==1.1.2
+    - torchcam>=0.4.0
+    - python-dotenv

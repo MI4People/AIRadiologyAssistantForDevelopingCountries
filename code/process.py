@@ -11,15 +11,6 @@ def bytes_to_pil(img_bytes) -> np.ndarray:
     return image
 
 
-def ndarray_to_base64(ndarray: np.ndarray) -> str:
-    image = Image.fromarray(ndarray.astype(np.uint8))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    buffer.seek(0)
-
-    return base64.b64encode(buffer.read()).decode("utf-8")
-
-
 def preprocess(img):
     transform = torchvision.transforms.Compose([
         torchvision.transforms.Grayscale(num_output_channels=1),
