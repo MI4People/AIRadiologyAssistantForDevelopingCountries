@@ -33,11 +33,12 @@ def init():
     This function is called when the container is initialized/started, typically after create/update of the deployment.
     You can write the logic here to perform init operations like caching the model in memory
     """
-    global model, blob_service_client, container_client, cam
+    global model, blob_service_client, container_client, cam, account_name
     # AZUREML_MODEL_DIR is an environment variable created during deployment.
     # It is the path to the model folder (./azureml-models/$MODEL_NAME/$VERSION)
     # Please provide your model's folder name if there is one
-    path = os.path.join(os.getenv("AZUREML_MODEL_DIR"), "model.pkl")
+    path = os.path.join(os.getenv("AZUREML_MODEL_DIR", "model/"), "model.pkl")
+    account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
     # deserialize the model file back into a torch model
     model = joblib.load(path)
     model.float()
@@ -46,8 +47,9 @@ def init():
     model.eval()
     logger.info(f"{model.weights}: Loaded model from path: {path}")
     # Connect to the blob storage
-    blob_service_client = BlobServiceClient.from_connection_string(
-        os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    blob_service_client = BlobServiceClient(
+        account_url=f"https://{account_name}.blob.core.windows.net/",
+        credential=os.getenv("AZURE_STORAGE_ACCESS_KEY")
     )
     container_client = blob_service_client.get_container_client(
         os.getenv("AZURE_STORAGE_CONTAINER_NAME")
@@ -131,5 +133,5 @@ def get_gradcam(transformed: torch.Tensor, preds: torch.Tensor, image_uuid: str)
         )
         blob_client.upload_blob(buffer, overwrite=True, blob_type="BlockBlob", content_settings=content_settings)
         logger.info(f"Uploaded {blob_client.blob_name} to blob storage")
-        outputs[pathology] = f"http://127.0.0.1:10000/{blob_client.account_name}/{blob_client.container_name}/{blob_client.blob_name}"
+        outputs[pathology] = blob_client.url
     return outputs
