@@ -191,3 +191,7 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+
+.vscode/
+az_function/local.settings.json
