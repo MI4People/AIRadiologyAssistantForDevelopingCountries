@@ -193,5 +193,6 @@ Temporary Items
 .apdisk
 
 
-.vscode/
+
 az_function/local.settings.json
+.vscode/

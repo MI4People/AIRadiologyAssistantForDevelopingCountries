@@ -12,6 +12,7 @@ from torchcam.utils import overlay_mask
 
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from process import bytes_to_pil, preprocess
+from process import INDEX_TO_PATHOLOGY, PATHOLOGY_TO_INDEX
 import dotenv
 
 dotenv.load_dotenv()
@@ -45,7 +46,10 @@ def init():
     model = joblib.load(path)
     model.float()
     if torch.cuda.is_available():
+        logger.info(f"{model.weights}: Using CUDA for inference")
         model = model.cuda()
+    else:
+        logger.info(f"{model.weights}: Using CPU for inference")
     model.eval()  # Set model to evaluation mode for inference
     logger.info(f"{model.weights}: Loaded model from path: {path}")
     # Connect to the blob storage
@@ -78,7 +82,10 @@ def run(raw_data):
     response = {}
 
     # Get the uuid for the image from the request
-    image_uuid = json.loads(raw_data)["image_uuid"]
+    image_uuid = json.loads(raw_data).get("image_uuid", None)
+    if not image_uuid:
+        response = json.dumps({"error": "No image_uuid provided"})
+        return response
 
     # Get the image from the blob storage
     blob_client = container_client.get_blob_client(image_uuid)
@@ -89,17 +96,27 @@ def run(raw_data):
     transformed, rescaled = preprocess(data)
 
     # Get the predictions and gradcam images
-    response["predictions"], preds = inference(rescaled)
-    response["gradimages"] = get_gradcam(transformed, preds, image_uuid)
+    preds, preds_dict = inference(rescaled)
+    gradcam_dict = get_gradcam(transformed, preds, image_uuid, preds_dict)
+
+    for pathology in preds_dict:
+        if response.get("predictions") is None:
+            response["predictions"] = {}
+        response["predictions"][pathology] = {
+            "prediction": preds_dict[pathology],
+            "gradcam": gradcam_dict[pathology],
+        }
     logger.info(f"{model.weights}: Request processed")
+    response["name"] = image_uuid
     response = json.dumps(response)
     return response
 
 
-def inference(image: torch.tensor) -> tuple[dict, torch.Tensor]:
+def inference(image: torch.tensor, k: int=5) -> tuple[dict, torch.Tensor]:
     """
     Args:
         image (np.array): Image to be processed
+        k (int): Top k number of predictions to return and generate gradcam (default: 5)
     Returns:
 `       tuple[dict, torch.Tensor]: Dictionary of predictions for HTTP response and tensor of predictions
     """
@@ -111,14 +128,17 @@ def inference(image: torch.tensor) -> tuple[dict, torch.Tensor]:
 
     # Get the predictions
     preds = model(image).cpu()
+    preds_topk = torch.topk(preds, 5)
 
-    # Convert the predictions to a dictionary
-    preds_dict = dict(zip(model.pathologies, preds[0].detach().numpy().tolist()))
-    return preds_dict, preds
+    preds_dict = {}
+    for i in range(len(preds_topk.indices[0])):
+        preds_dict[INDEX_TO_PATHOLOGY[preds_topk.indices[0][i].item()]] = preds_topk.values[0][i].item()
+
+    return preds, preds_dict
 
 
 def get_gradcam(
-    transformed: torch.Tensor, preds: torch.Tensor, image_uuid: str
+    transformed: torch.Tensor, preds: torch.Tensor, image_uuid: str, preds_dict: dict
 ) -> dict:
     """
     Args:
@@ -138,11 +158,11 @@ def get_gradcam(
 
     # Gradcam for each pathology
     cam_extractors = [
-        cam(class_idx=i, scores=preds, retain_graph=True)
-        for i, _ in enumerate(model.pathologies)
+        cam(class_idx=PATHOLOGY_TO_INDEX[i], scores=preds, retain_graph=True)
+        for i in preds_dict.keys()
     ]
 
-    for i, pathology in enumerate(model.pathologies):
+    for i, pathology in enumerate(preds_dict):
         activation_maps = cam_extractors[i]
 
         # Overlay the mask on the image and save it to the blob storage
