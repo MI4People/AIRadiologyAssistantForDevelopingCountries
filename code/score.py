@@ -19,11 +19,10 @@ dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Methods available in torchcam
 METHODS = {
     "gradcam": methods.GradCAM,
     "scorecam": methods.ScoreCAM,
-    "gradcam++": methods.GradCAMpp,
+    "gradcampp": methods.GradCAMpp,
     "isc": methods.ISCAM,
     "xgradcam": methods.XGradCAM,
     "layercam": methods.LayerCAM,
@@ -36,7 +35,7 @@ def init():
     This function is called when the container is initialized/started, typically after create/update of the deployment.
     You can write the logic here to perform init operations like caching the model in memory
     """
-    global model, blob_service_client, container_client, cam, account_name
+    global model, blob_service_client, container_client, account_name
     # AZUREML_MODEL_DIR is an environment variable created during deployment.
     # It is the path to the model folder (./azureml-models/$MODEL_NAME/$VERSION)
     # Please provide your model's folder name if there is one
@@ -54,20 +53,14 @@ def init():
     logger.info(f"{model.weights}: Loaded model from path: {path}")
     # Connect to the blob storage
     blob_service_client = BlobServiceClient(
-        account_url=f"https://{account_name}.blob.core.windows.net",
+        # account_url=f"https://{account_name}.blob.core.windows.net/",
+        account_url=f"http://host.docker.internal:10000/{account_name}/",
         credential=os.getenv("AZURE_STORAGE_ACCESS_KEY"),
     )
     container_client = blob_service_client.get_container_client(
         os.getenv("AZURE_STORAGE_CONTAINER_NAME")
     )
     logger.info(f"{model.weights}: Connected to blob storage")
-    method = os.getenv("METHOD", "gradcam")
-
-    # Get the target layer for the CAM, layers can be grouped into blocks and called
-    target_layer = model.features.get_submodule(
-        os.getenv("TARGET_LAYER", "denseblock4.denselayer16.conv2")
-    )
-    cam = METHODS[method](model=model, target_layer=target_layer)
 
 
 def run(raw_data):
@@ -80,12 +73,18 @@ def run(raw_data):
 
     # Initialize the response dictionary
     response = {}
-
+    request = json.loads(raw_data)
+    logger.error(f"{model.weights}: Request data: {request}")
     # Get the uuid for the image from the request
-    image_uuid = json.loads(raw_data).get("image_uuid", None)
+    image_uuid = request.get("image_uuid", None)
+    options = request.get("options", ["gradcam"])
+    k = int(request.get("k", 5))
+
     if not image_uuid:
-        response = json.dumps({"error": "No image_uuid provided"})
-        return response
+        return json.dumps({"error": "No image_uuid provided"})
+
+    if not options or not k:
+        return json.dumps({"error": "No options provided"})
 
     # Get the image from the blob storage
     blob_client = container_client.get_blob_client(image_uuid)
@@ -96,96 +95,104 @@ def run(raw_data):
     transformed, rescaled = preprocess(data)
 
     # Get the predictions and gradcam images
-    preds, preds_dict = inference(rescaled)
-    gradcam_dict = get_gradcam(transformed, preds, image_uuid, preds_dict)
+    preds, preds_dict, cams_dict = inference_and_gradcam(transformed, rescaled, k, image_uuid, options)
 
-    for pathology in preds_dict:
-        if response.get("predictions") is None:
-            response["predictions"] = {}
-        response["predictions"][pathology] = {
-            "prediction": preds_dict[pathology],
-            "gradcam": gradcam_dict[pathology],
-        }
+    response["predictions"] = preds_dict
+    response["cam"] = cams_dict
+
     logger.info(f"{model.weights}: Request processed")
     response["name"] = image_uuid
     response = json.dumps(response)
     return response
 
 
-def inference(image: torch.tensor, k: int=5) -> tuple[dict, torch.Tensor]:
+def inference_and_gradcam(image: torch.Tensor, rescaled: torch.Tensor, k: int, image_uuid: str, options: list) -> tuple[torch.Tensor, dict, dict]:
     """
     Args:
-        image (np.array): Image to be processed
+        image (torch.Tensor): Transformed image to be processed
+        rescaled (torch.Tensor): Rescaled image for gradcam
         k (int): Top k number of predictions to return and generate gradcam (default: 5)
+        image_uuid (str): UUID of the image in the blob storage
+        options (list): List of gradcam methods to generate (default: ["gradcam"])
     Returns:
-`       tuple[dict, torch.Tensor]: Dictionary of predictions for HTTP response and tensor of predictions
+        tuple[torch.Tensor, dict, dict]: Tuple containing tensor of predictions, dictionary of predictions, and dictionary of gradcam images URLs for each pathology in blob storage
     """
 
     # Add a batch dimension to the image tensor
-    image = image.unsqueeze(0)
+    image = rescaled.unsqueeze(0)
     if torch.cuda.is_available():
         image = image.cuda()
 
     # Get the predictions
     preds = model(image).cpu()
-    preds_topk = torch.topk(preds, 5)
+    preds_topk = torch.topk(preds, k)
 
     preds_dict = {}
     for i in range(len(preds_topk.indices[0])):
-        preds_dict[INDEX_TO_PATHOLOGY[preds_topk.indices[0][i].item()]] = preds_topk.values[0][i].item()
-
-    return preds, preds_dict
-
-
-def get_gradcam(
-    transformed: torch.Tensor, preds: torch.Tensor, image_uuid: str, preds_dict: dict
-) -> dict:
-    """
-    Args:
-        transformed: Image after preprocessing
-        preds: Predictions
-        image_uuid: UUID of the image in the blob storage
-    Returns:
-        dict: Dictionary of gradcam images URLs for each pathology in blob storage
-    """
+        preds_dict[INDEX_TO_PATHOLOGY[preds_topk.indices[0][i].item()]] = (
+            preds_topk.values[0][i].item()
+        )
 
     # Settings for the blob storage for image as PNG format
     content_settings = ContentSettings(content_type="image/png")
 
-    # Reduces the gradients to zero
-    model.zero_grad()
     outputs = {}
 
     # Gradcam for each pathology
-    cam_extractors = [
-        cam(class_idx=PATHOLOGY_TO_INDEX[i], scores=preds, retain_graph=True)
-        for i in preds_dict.keys()
-    ]
+    # Get the target layer for the CAM, layers can be grouped into blocks and called
+    target_layer = model.features.get_submodule(
+        os.getenv("TARGET_LAYER", "denseblock4.denselayer16.conv2")
+    )
 
-    for i, pathology in enumerate(preds_dict):
-        activation_maps = cam_extractors[i]
+    cam = {
+        method: METHODS[method](model=model, target_layer=target_layer)
+        for method in options
+    }
 
-        # Overlay the mask on the image and save it to the blob storage
-        activation_maps = (
-            activation_maps[0]
-            if len(activation_maps) == 1
-            else cam_extractors[i].fuse_cams(activation_maps)
-        )
-        result = overlay_mask(
-            to_pil_image(transformed.expand(3, -1, -1)),
-            to_pil_image(activation_maps, mode="F"),
-            alpha=0.7,
-        )
-        buffer = io.BytesIO()
-        result.save(buffer, format="PNG")
-        buffer.seek(0)
-        blob_client = container_client.get_blob_client(f"{image_uuid}_{pathology}")
-        blob_client.upload_blob(
-            buffer,
-            overwrite=True,
-            blob_type="BlockBlob",
-            content_settings=content_settings,
-        )
-        logger.info(f"Uploaded {blob_client.blob_name} to blob storage")
-        outputs[pathology] = blob_client.blob_name
-    return outputs
+    for method in options:
+        outputs[method] = {}
+        if method == "isc" or method == "scorecam":
+            cam_extractors = [
+                cam[method](
+                    class_idx=PATHOLOGY_TO_INDEX[i]
+                )
+                for i in preds_dict.keys()
+            ]
+
+        else:
+            cam_extractors = [
+                cam[method](
+                    class_idx=PATHOLOGY_TO_INDEX[i], scores=preds, retain_graph=True
+                )
+                for i in preds_dict.keys()
+            ]
+
+        for i, pathology in enumerate(preds_dict):
+            activation_maps = cam_extractors[i]
+
+            # Overlay the mask on the image and save it to the blob storage
+            activation_maps = (
+                activation_maps[0]
+                if len(activation_maps) == 1
+                else cam_extractors[i].fuse_cams(activation_maps)
+            )
+            result = overlay_mask(
+                to_pil_image(image.squeeze().expand(3, -1, -1)),
+                to_pil_image(activation_maps, mode="F"),
+                alpha=0.7,
+            )
+            buffer = io.BytesIO()
+            result.save(buffer, format="PNG")
+            buffer.seek(0)
+            blob_client = container_client.get_blob_client(
+                f"{image_uuid}_{pathology}_{method}"
+            )
+            blob_client.upload_blob(
+                buffer,
+                overwrite=True,
+                blob_type="BlockBlob",
+                content_settings=content_settings,
+            )
+            logger.info(f"Uploaded {blob_client.blob_name} to blob storage")
+            outputs[method][pathology] = blob_client.blob_name
+    return preds, preds_dict, outputs
